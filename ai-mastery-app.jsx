@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./src/supabaseClient";
 
 /* ─── DATA ─── */
 const WEEKS = [
@@ -423,10 +424,17 @@ function ConfettiParticle({ index }) {
 
 /* ─── APP ─── */
 export default function AIMastery() {
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState('');
+
   const [tab, setTab] = useState("plan");
   const [week, setWeek] = useState(0);
   const [openDay, setOpenDay] = useState(null);
-  const [completed, setCompleted] = useState(() => loadData("completed", {}));
+  const [completed, setCompleted] = useState({});
   const [notes, setNotes] = useState(() => loadData("notes", {}));
   const [editingNote, setEditingNote] = useState(null);
   const [noteText, setNoteText] = useState("");
@@ -434,20 +442,53 @@ export default function AIMastery() {
   const [showConfetti, setShowConfetti] = useState(false);
   const noteRef = useRef(null);
 
-  useEffect(() => { saveData("completed", completed); }, [completed]);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (session) {
+      const fetchProgress = async () => {
+        const { data } = await supabase.from('progress').select('day');
+        if (data) {
+          const loaded = {};
+          data.forEach(r => loaded[r.day] = true);
+          setCompleted(loaded);
+        }
+      };
+      fetchProgress();
+    } else {
+      setCompleted({});
+    }
+  }, [session]);
+
   useEffect(() => { saveData("notes", notes); }, [notes]);
   useEffect(() => { if (editingNote && noteRef.current) noteRef.current.focus(); }, [editingNote]);
 
-  const toggleComplete = (day, e) => {
+  const toggleComplete = async (day, e) => {
     e && e.stopPropagation();
-    const next = { ...completed, [day]: !completed[day] };
+    if (!session) return;
+
+    const isNowDone = !completed[day];
+    const next = { ...completed, [day]: isNowDone };
     setCompleted(next);
-    if (next[day]) {
+    
+    if (isNowDone) {
       const count = Object.values(next).filter(Boolean).length;
       if (count % 7 === 0 || count === 30) {
         setShowConfetti(true);
         setTimeout(() => setShowConfetti(false), 3000);
       }
+      await supabase.from('progress').insert({ day, user_id: session.user.id });
+    } else {
+      await supabase.from('progress').delete().match({ day, user_id: session.user.id });
     }
   };
 
@@ -463,6 +504,27 @@ export default function AIMastery() {
     setEditingNote(null);
   };
 
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthLoading(true);
+    let error;
+    if (isSignUp) {
+      const res = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+      error = res.error;
+      if (!error && res.data.user && !res.data.session) setAuthError('Check your email for the confirmation link!');
+    } else {
+      const res = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+      error = res.error;
+    }
+    if (error) setAuthError(error.message);
+    setAuthLoading(false);
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+  };
+
   const totalDone = Object.values(completed).filter(Boolean).length;
   const streak = getStreak(completed);
   const pct = Math.round((totalDone / 30) * 100);
@@ -476,7 +538,44 @@ export default function AIMastery() {
   return (
     <div style={{ fontFamily: S.font, background: S.bg, color: S.text, minHeight: "100vh", position: "relative" }}>
 
-      {/* Confetti — FIX: Use Web Animations API per particle to avoid shared keyframe collision */}
+      {authLoading && !session && (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ color: S.text2 }}>Authenticating...</div>
+        </div>
+      )}
+
+      {!authLoading && !session && (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: S.surface, border: `1px solid ${S.border}`, padding: 40, borderRadius: 16, width: "100%", maxWidth: 400 }}>
+            <div style={{ textAlign: "center", marginBottom: 32 }}>
+              <span style={{ fontSize: 40, display: "block", marginBottom: 16 }}>🚀</span>
+              <h1 style={{ margin: "0 0 8px 0", fontSize: 24, fontWeight: 700 }}>AI Mastery</h1>
+              <p style={{ color: S.text3, margin: 0, fontSize: 14 }}>Log in to track your 30-day progress</p>
+            </div>
+            <form onSubmit={handleAuth} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {authError && (
+                <div style={{ background: "rgba(248, 81, 73, 0.1)", color: "#F85149", padding: "12px 16px", borderRadius: 8, fontSize: 13, border: "1px solid rgba(248, 81, 73, 0.2)" }}>
+                  {authError}
+                </div>
+              )}
+              <input type="email" placeholder="Email address" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required style={{ padding: "12px 16px", background: S.surface2, border: `1px solid ${S.border}`, borderRadius: 8, color: S.text, fontSize: 14, outline: "none" }} />
+              <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required style={{ padding: "12px 16px", background: S.surface2, border: `1px solid ${S.border}`, borderRadius: 8, color: S.text, fontSize: 14, outline: "none" }} />
+              <button type="submit" disabled={authLoading} style={{ padding: "12px", background: "#EDEDEF", color: "#000", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: authLoading ? "not-allowed" : "pointer", opacity: authLoading ? 0.7 : 1, transition: "0.2s" }}>
+                {authLoading ? "Please wait..." : (isSignUp ? "Create Account" : "Sign In")}
+              </button>
+            </form>
+            <div style={{ marginTop: 24, textAlign: "center" }}>
+              <button onClick={() => { setIsSignUp(!isSignUp); setAuthError(''); }} style={{ background: "transparent", border: "none", color: S.text2, fontSize: 13, cursor: "pointer", textDecoration: "underline" }}>
+                {isSignUp ? "Already have an account? Sign in" : "Don't have an account? Sign up"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {session && (
+        <>
+          {/* Confetti — FIX: Use Web Animations API per particle to avoid shared keyframe collision */}
       {showConfetti && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none", zIndex: 999, overflow: "hidden" }}>
           {Array.from({ length: 48 }).map((_, i) => (
@@ -488,12 +587,15 @@ export default function AIMastery() {
       {/* Header */}
       <div style={{ borderBottom: `1px solid ${S.border}`, padding: "28px 24px 20px" }}>
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <span style={{ fontSize: 28 }}>🧠</span>
-            <div>
-              <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: -0.5 }}>30-Day AI Mastery</h1>
-              <p style={{ fontSize: 13, color: S.text3, margin: "2px 0 0" }}>Learn every AI tool. Build real projects. Create content daily.</p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 28 }}>🧠</span>
+              <div>
+                <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: -0.5 }}>30-Day AI Mastery</h1>
+                <p style={{ fontSize: 13, color: S.text3, margin: "2px 0 0" }}>Learn every AI tool. Build real projects. Create content daily.</p>
+              </div>
             </div>
+            <button onClick={handleSignOut} style={{ padding: "6px 12px", background: S.surface2, border: `1px solid ${S.border}`, color: S.text2, borderRadius: 6, fontSize: 12, cursor: "pointer" }}>Sign Out</button>
           </div>
 
           {/* Stats row */}
@@ -834,9 +936,10 @@ export default function AIMastery() {
             <div style={{ marginTop: 40, padding: 16, background: S.surface, borderRadius: 10, border: `1px solid ${S.border}` }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: "#F85149", fontFamily: S.mono, marginBottom: 8 }}>⚠️ DANGER ZONE</div>
               <p style={{ fontSize: 13, color: S.text3, marginBottom: 10 }}>Reset all progress, completed days, and notes. This cannot be undone.</p>
-              <button onClick={() => {
-                if (window.confirm("Reset all progress? This will clear completed days and notes.")) {
+              <button onClick={async () => {
+                if (window.confirm("Reset all progress? This will clear completed days securely from the cloud.")) {
                   setCompleted({}); setNotes({}); setOpenDay(null); setFilter("all");
+                  if (session) await supabase.from('progress').delete().eq('user_id', session.user.id);
                 }
               }} style={{
                 padding: "6px 16px", background: "transparent", border: "1px solid #F8514933", borderRadius: 6,
@@ -846,6 +949,8 @@ export default function AIMastery() {
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }
